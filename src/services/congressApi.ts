@@ -1,16 +1,11 @@
-// =============================================================================
-// Congress.gov API Service
-// Docs: https://api.congress.gov/
-// Free API key: https://api.congress.gov/sign-up/
-// =============================================================================
-
-import type { Bill, CongressGovSearchResponse, BillAction } from '../types';
+import type { Bill } from '../types';
 import { classifyBill } from '../utils/classifier';
 
 const API_KEY = import.meta.env.VITE_CONGRESS_API_KEY;
-const BASE_URL = '/api/congress/v3';
 
-// Infrastructure / utilities / telecom policy areas and subjects to search
+// Call Congress.gov directly (supports CORS)
+const BASE_URL = 'https://api.congress.gov/v3';
+
 const SEARCH_QUERIES = [
   'infrastructure',
   'telecommunications',
@@ -19,70 +14,47 @@ const SEARCH_QUERIES = [
   'water infrastructure',
   'energy grid',
   'spectrum',
-  'pipeline',
-  'transportation infrastructure',
+  'pipeline safety',
   'nuclear energy',
-  'clean water',
-  'rural broadband',
   'smart grid',
-  '5G',
-  // Power utilities
   'power utility',
   'electric power',
-  'electricity rate',
-  'public utility commission',
   'FERC',
   'power generation',
   'transmission line',
-  'electric cooperative',
   'grid reliability',
-  'load interconnection',
-  'net metering',
-  'distributed generation',
-  'utility regulation',
-  'power outage',
   'grid modernization',
-  'electricity market',
+  'net metering',
+  'utility regulation',
+  'clean water act',
+  'safe drinking water',
 ];
 
-async function fetchFromCongress(endpoint: string, params: Record<string, string> = {}): Promise<any> {
-  if (!API_KEY) {
-    throw new Error('Congress.gov API key not configured. Add VITE_CONGRESS_API_KEY to your .env file.');
-  }
-
-  const url = new URL(`${BASE_URL}${endpoint}`, window.location.origin);
-  url.searchParams.set('api_key', API_KEY);
-  url.searchParams.set('format', 'json');
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-
-  const res = await fetch(url.toString());
+async function fetchJSON(url: string): Promise<any> {
+  const res = await fetch(url);
   if (!res.ok) {
     throw new Error(`Congress.gov API error: ${res.status} ${res.statusText}`);
   }
   return res.json();
 }
 
-/**
- * Search Congress.gov for bills matching infrastructure/utilities keywords.
- * Deduplicates results across multiple queries.
- */
 export async function searchBills(congress: number = 119): Promise<Bill[]> {
+  if (!API_KEY) {
+    throw new Error('Congress.gov API key not configured.');
+  }
+
   const seen = new Set<string>();
   const allBills: Bill[] = [];
 
   for (const query of SEARCH_QUERIES) {
     try {
-      const data: CongressGovSearchResponse = await fetchFromCongress('/bill', {
-        query,
-        congress: String(congress),
-        limit: '20',
-        sort: 'updateDate+desc',
-      });
+      const url = `${BASE_URL}/bill?query=${encodeURIComponent(query)}&congress=${congress}&limit=20&sort=updateDate+desc&api_key=${API_KEY}&format=json`;
+      const data = await fetchJSON(url);
+      const bills = data.bills || [];
 
-      if (!data.bills) continue;
-
-      for (const raw of data.bills) {
-        const key = `${raw.type}${raw.number}-${raw.congress}`;
+      for (const raw of bills) {
+        const billType = raw.type || 'HR';
+        const key = `${billType}${raw.number}-${raw.congress}`;
         if (seen.has(key)) continue;
         seen.add(key);
 
@@ -97,42 +69,14 @@ export async function searchBills(congress: number = 119): Promise<Bill[]> {
   return allBills;
 }
 
-/**
- * Fetch full details for a single bill.
- */
-export async function getBillDetails(congress: number, type: string, number: number): Promise<Bill | null> {
-  try {
-    const data = await fetchFromCongress(`/bill/${congress}/${type.toLowerCase()}/${number}`);
-    return mapCongressBill(data.bill);
-  } catch (err) {
-    console.error('Failed to fetch bill details:', err);
-    return null;
-  }
-}
-
-/**
- * Fetch action history for a bill.
- */
-export async function getBillActions(congress: number, type: string, number: number): Promise<BillAction[]> {
-  try {
-    const data = await fetchFromCongress(`/bill/${congress}/${type.toLowerCase()}/${number}/actions`);
-    return (data.actions || []).map((a: any) => ({
-      date: a.actionDate,
-      description: a.text,
-      chamber: a.actionCode?.startsWith('H') ? 'House' : a.actionCode?.startsWith('S') ? 'Senate' : undefined,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-// Map raw Congress.gov response to our Bill type
 function mapCongressBill(raw: any): Bill | null {
   if (!raw) return null;
+  if (raw.congress && raw.congress !== 119) return null;
 
-  const classification = classifyBill(raw.title, raw.policyArea?.name, raw.subjects);
-
-  // Skip bills that don't match our sectors
+  const title = raw.title || '';
+  const policyArea = raw.policyArea?.name || '';
+  const subjects = raw.subjects?.legislativeSubjects || [];
+  const classification = classifyBill(title, policyArea, subjects);
   if (!classification) return null;
 
   const billType = raw.type || 'HR';
@@ -143,8 +87,8 @@ function mapCongressBill(raw: any): Bill | null {
 
   return {
     id: `${billType}-${raw.number}`,
-    title: raw.title || 'Untitled Bill',
-    shortTitle: truncate(raw.title || '', 60),
+    title,
+    shortTitle: title.length > 60 ? title.slice(0, 59) + '…' : title,
     chamber: chamberMap[billType] || 'House',
     billNumber: formatBillNumber(billType, raw.number),
     status: inferStatus(raw.latestAction?.text),
@@ -153,12 +97,12 @@ function mapCongressBill(raw: any): Bill | null {
     lastActionDate: raw.latestAction?.actionDate || '',
     category: classification.category,
     sectors: classification.sectors,
-    summary: raw.title || '',
+    summary: title,
     sponsors: raw.sponsors?.map((s: any) => `${s.fullName} (${s.party}-${s.state})`) || [],
     cosponsors: raw.cosponsors?.count || 0,
     committees: raw.committees?.map((c: any) => c.name) || [],
     impactLevel: classification.impact,
-    congress: `${raw.congress}th`,
+    congress: `${raw.congress || 119}th`,
     sourceUrl: raw.url || `https://www.congress.gov/bill/${raw.congress}th-congress/${billType.toLowerCase()}/${raw.number}`,
     tags: classification.tags,
   };
@@ -183,8 +127,4 @@ function formatBillNumber(type: string, num: number | string): string {
     HRES: 'H.Res.', SRES: 'S.Res.', HCONRES: 'H.Con.Res.', SCONRES: 'S.Con.Res.',
   };
   return `${prefixMap[type] || type} ${num}`;
-}
-
-function truncate(str: string, max: number): string {
-  return str.length > max ? str.slice(0, max - 1) + '…' : str;
 }
