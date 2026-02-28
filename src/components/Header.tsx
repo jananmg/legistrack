@@ -21,11 +21,11 @@ export function Header() {
               </svg>
             </div>
             <h1 className="font-display text-2xl sm:text-3xl text-slate-100 tracking-tight">
-              LegisTrack
+              GridWatch
             </h1>
           </div>
           <p className="text-slate-400 text-sm font-body max-w-lg">
-            U.S. infrastructure, utilities & telecom legislation tracker — 119th Congress
+            Monitoring U.S. infrastructure, utilities & telecom legislation
           </p>
         </div>
 
