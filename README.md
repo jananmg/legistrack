@@ -1,4 +1,4 @@
-# LegisTrack
+# GridWatch
 
 **Track U.S. infrastructure, utilities, and telecom legislation in real time.**
 
